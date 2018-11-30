@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import requests
 from configparser import ConfigParser
-import argparse
 import os
 import subprocess
 import time
 import json
 from .utils import base64url_decode, select_item
 
+COLORRED = u"\u001b[31m"
+RESET_COLOR = u"\u001b[0m"
+COLORBLUE = u"\u001b[34m"
+COLORGREEN = u"\u001b[32m"
 
 
 class Client:
@@ -17,6 +20,8 @@ class Client:
         with open(self.configpath) as fd:
             self.config.read_file(fd)
         self.environments = list(self.config['environments'].keys())
+        self.node = None
+        self.environment = None
         self.session = requests.Session()
 
     def is_jwt_expired(self, jwt):
@@ -49,19 +54,28 @@ class Client:
             self.config.write(fd)
         return jwt
 
-
     def select_environment(self, match=None):
-        self.environment = select_item(self.environments, "Select environment:  ", match)
+        self.set_environment(select_item(self.environments, "Select environment:  ", match))
+
+    def set_environment(self, environment):
+        self.environment = environment
         self.envurl = self.config['environments'][self.environment]
         self.session.headers = {'Authorization': 'Bearer {}'.format(self.get_jwt()),
                                 'Accept': 'application/json'}
 
-    def select_node(self, match=None):
+    def list_nodes(self):
         response = self.session.post('https://{}/restmachine/system/gridmanager/getNodes'.format(self.envurl))
         response.raise_for_status()
         self.nodes = response.json()
         nodenames = [node['name'] for node in self.nodes]
+        return nodenames
+
+    def select_node(self, match=None):
+        nodenames = self.list_nodes()
         nodename = select_item(nodenames, "Select node: ", match)
+        self.set_node(nodename)
+
+    def set_node(self, nodename):
         self.node = list(filter(lambda node: node['name'] == nodename, self.nodes))[0]
 
     def select_cloudspace(self, match=None):
@@ -78,28 +92,46 @@ class Client:
         cloudspacename = select_item(list(cloudspaces.keys()), "Select Account: ", match)
         return cloudspaces[cloudspacename]
 
-    def select_vm(self, cloudspaace, match=None):
-        response = self.session.post('https://{}/restmachine/cloudapi/machines/list'.format(self.envurl), json={'cloudspaceId': cloudspace['id']})
-        response.raise_for_status()
-        vms = {vm['name']: vm for vm in response.json()}
+    def select_vm(self, cloudspace, match=None):
+        vms = {vm['name']: vm for vm in self.list_vms(cloudspace)}
         vmname = select_item(list(vms.keys()), "Select VM: ", match)
         return vms[vmname]
 
     def list_vms(self, cloudspace):
         response = self.session.post('https://{}/restmachine/cloudapi/machines/list'.format(self.envurl), json={'cloudspaceId': cloudspace['id']})
         response.raise_for_status()
-        for vm in response.json():
-            print("{name} {status}".format(**vm))
+        return response.json()
+
+    def print_vms(self, cloudspace, vms=None):
+        if vms is None:
+            vms = self.list_vms(cloudspace)
+        for vm in vms:
+            color = COLORBLUE
+            if vm['status'] == 'RUNNING':
+                color = COLORGREEN
+            elif vm['status'] == 'HALTED':
+                color = COLORRED
+            vm['color'] = color
+            vm['reset'] = RESET_COLOR
+            print("{name} {color}{status}{reset}".format(**vm))
 
     def list_cloudspaces(self):
         response = self.session.post('https://{}/restmachine/cloudapi/cloudspaces/list'.format(self.envurl))
         response.raise_for_status()
-        for cloudspace in response.json():
+        return response.json()
+
+    def print_cloudspaces(self, cloudspaces=None):
+        if cloudspaces is None:
+            cloudspaces = self.list_cloudspaces()
+        for cloudspace in cloudspaces:
             print("{name} {status} {externalnetworkip}".format(**cloudspace))
 
     def delete_vm(self, cloudspace, name):
         vm = self.select_vm(cloudspace, name)
-        data = {'machineId': vm['id'], 'permanently': True}
+        self.delete_vm_by_id(vm['id'])
+
+    def delete_vm_by_id(self, vmid):
+        data = {'machineId': vmid, 'permanently': True}
         response = self.session.post('https://{}/restmachine/cloudapi/machines/delete'.format(self.envurl), json=data)
         response.raise_for_status()
 
@@ -107,6 +139,12 @@ class Client:
         data = {'cloudspaceId': cloudspace['id'], 'permanently': True, 'reason': 'From CLI'}
         response = self.session.post('https://{}/restmachine/cloudbroker/cloudspace/destroy'.format(self.envurl), json=data)
         response.raise_for_status()
+
+    def vm_action(self, action, vmid):
+        data = {'machineId': vmid}
+        response = self.session.post('https://{}/restmachine/cloudapi/machines/{}'.format(self.envurl, action), json=data)
+        response.raise_for_status()
+        return response.json()
 
     def create_machine(self, cloudspace, name=None, memory=None, vcpus=None, forward=True):
         """
@@ -164,6 +202,8 @@ class Client:
         for account in vm['accounts']:
             print('\tUser: {login} / {password}'.format(**account))
        
+        if not forward:
+            return
         pubport = self.get_publicport(cloudspace)
 
         data = {
@@ -177,6 +217,7 @@ class Client:
         response = self.session.post('https://{}/restmachine/cloudapi/portforwarding/create'.format(self.envurl), json=data)
         response.raise_for_status()
         print('ssh -p {} root@{}'.format(pubport, cloudspace['externalnetworkip']))
+        return vm
 
     def get_publicport(self, cloudspace):
         response = self.session.post('https://{}/restmachine/cloudapi/portforwarding/list'.format(self.envurl), json={'cloudspaceId': cloudspace['id']})
@@ -218,7 +259,12 @@ class Client:
     def list_forwards(self, cloudspace):
         response = self.session.post('https://{}/restmachine/cloudapi/portforwarding/list'.format(self.envurl), json={'cloudspaceId': cloudspace['id']})
         response.raise_for_status()
-        for fwd in response.json():
+        return response.json()
+
+    def print_forwards(self, cloudspace, forwards=None):
+        if forwards is None:
+            forwards = self.list_forwards(cloudspace)
+        for fwd in forwards:
             print("{machineName} {publicIp}:{publicPort} -> {localIp}:{localPort} {protocol}".format(**fwd))
 
     def create_cloudspace(self, name, account, cstype):
