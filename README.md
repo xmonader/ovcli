@@ -19,10 +19,13 @@ clientid = my client id
 clientsecret = my client secret
 ```
 
-# Demo
+## Demo
 [![asciicast](https://asciinema.org/a/jSdN48CyV4QM0AadnbKnvd9ss.svg)](https://asciinema.org/a/jSdN48CyV4QM0AadnbKnvd9ss)
 
 
 # ovcsh
 
+Interactive shell powered by [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) for working with OVC to manage the crud operations on cloudspace/vm/forwards 
+
+## Demo
 [![asciicast](https://asciinema.org/a/PnZF92mWgZWkLprCXjkSERhTS.svg)](https://asciinema.org/a/PnZF92mWgZWkLprCXjkSERhTS)
